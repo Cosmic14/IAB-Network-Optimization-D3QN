@@ -40,11 +40,7 @@ def parse_args() -> argparse.Namespace:
         description="Train a D3QN agent for mmWave IAB small-cell placement."
     )
 
-    # Environment
-    parser.add_argument("--width",      type=float, default=500.0,
-                        help="CityGrid width [m] (default: 500)")
-    parser.add_argument("--height",     type=float, default=500.0,
-                        help="CityGrid height [m] (default: 500)")
+    # Environment (grid fixed at 1000 m × 1000 m per Zhang et al. 2023)
     parser.add_argument("--num_users",  type=int,   default=10,
                         help="Number of UEs per episode (default: 10)")
     parser.add_argument("--n_bins",     type=int,   default=7,
@@ -152,15 +148,13 @@ def train(args: argparse.Namespace) -> None:
 
     # ── Environment and agent ────────────────────────────────────────────
     env = IABEnv(
-        width=args.width,
-        height=args.height,
         num_users=args.num_users,
         seed=args.seed,
     )
 
     agent = D3QNAgent(
-        grid_width=args.width,
-        grid_height=args.height,
+        grid_width=float(env.grid_size),
+        grid_height=float(env.grid_size),
         num_users=args.num_users,
         n_bins=args.n_bins,
         buffer_capacity=args.buffer_capacity,

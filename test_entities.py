@@ -157,16 +157,19 @@ class TestIABNodeBackhaulConstraint(unittest.TestCase):
     """Tests for IABNode.check_backhaul_constraint()."""
 
     def _node(self, flow_in: float, flow_out: float) -> IABNode:
-        return IABNode(x=0.0, y=0.0, is_donor=False,
+        node = IABNode(x=0.0, y=0.0, is_donor=False,
                        flow_in_capacity=flow_in, flow_out_demand=flow_out)
+        node.access_demand = 0.0  # pin to zero for deterministic constraint checks
+        return node
 
     # --- True cases -------------------------------------------------------
 
     def test_returns_true_when_flow_in_greater_than_flow_out(self) -> None:
         self.assertTrue(self._node(500.0, 300.0).check_backhaul_constraint())
 
-    def test_returns_true_when_flow_in_equals_flow_out(self) -> None:
-        self.assertTrue(self._node(400.0, 400.0).check_backhaul_constraint())
+    def test_returns_true_when_flow_in_equals_overhead_times_flow_out(self) -> None:
+        # With access_demand=0, overhead=1.2: need flow_in >= 1.2 * flow_out
+        self.assertTrue(self._node(480.0, 400.0).check_backhaul_constraint())
 
     def test_returns_true_when_both_zero(self) -> None:
         self.assertTrue(self._node(0.0, 0.0).check_backhaul_constraint())
@@ -174,12 +177,15 @@ class TestIABNodeBackhaulConstraint(unittest.TestCase):
     def test_returns_true_large_surplus(self) -> None:
         self.assertTrue(self._node(10_000.0, 1.0).check_backhaul_constraint())
 
-    def test_returns_true_just_above_demand(self) -> None:
-        self.assertTrue(self._node(300.001, 300.0).check_backhaul_constraint())
+    def test_returns_true_just_above_overhead_demand(self) -> None:
+        # 1.2 * 300 = 360; need flow_in strictly above 360
+        self.assertTrue(self._node(360.001, 300.0).check_backhaul_constraint())
 
     def test_donor_node_returns_true_when_satisfied(self) -> None:
         node = IABNode(x=0.0, y=0.0, is_donor=True,
                        flow_in_capacity=10_000.0, flow_out_demand=5_000.0)
+        node.access_demand = 0.0  # pin for determinism
+        # capacity=15000, required=1.2*(0+5000)=6000 → True
         self.assertTrue(node.check_backhaul_constraint())
 
     # --- False cases ------------------------------------------------------

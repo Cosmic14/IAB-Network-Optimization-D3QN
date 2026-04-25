@@ -75,20 +75,18 @@ class IABEnv:
 
     def __init__(
         self,
-        width: float,
-        height: float,
         num_users: int,
         seed: int | None = None,
     ) -> None:
         """
         Initialise the IAB environment.
 
+        The simulation area is fixed at a 1000 m × 1000 m grid with 10 m
+        resolution, consistent with Zhang et al. (2023) mmWave deployment
+        scenarios.
+
         Parameters
         ----------
-        width : float
-            Horizontal extent of the CityGrid [m].
-        height : float
-            Vertical extent of the CityGrid [m].
         num_users : int
             Number of User terminals to generate per episode.
         seed : int or None, optional
@@ -96,7 +94,21 @@ class IABEnv:
             Pass an integer for fully reproducible episodes; ``None`` (default)
             draws from OS entropy.
         """
-        self.grid: CityGrid = CityGrid(width=width, height=height)
+        # Fixed real-world deployment parameters (Zhang et al., 2023)
+        self.grid_size: int = 1000        # simulation area side length [m]
+        self.resolution: int = 10         # candidate-site spacing [m]
+        self.access_radius: int = 200     # max user-to-node access distance [m]
+        self.backhaul_radius: int = 300   # max relay-to-donor backhaul distance [m]
+
+        # Discrete candidate deployment sites on the 1000 m grid
+        _coords = np.arange(0, self.grid_size, self.resolution)
+        self.potential_sites: List[Tuple[int, int]] = [
+            (int(x), int(y)) for x in _coords for y in _coords
+        ]
+
+        self.grid: CityGrid = CityGrid(
+            width=float(self.grid_size), height=float(self.grid_size)
+        )
         self.channel: ChannelModel = ChannelModel()
         self.num_users: int = num_users
         self._rng: np.random.Generator = np.random.default_rng(seed)
@@ -110,7 +122,8 @@ class IABEnv:
         )
 
         # These are populated by reset(); declared here for type clarity.
-        self._donor: IABNode
+        self._donors: List[IABNode] = []
+        self._donor: IABNode          # alias for _donors[0], set in reset()
         self._relay_nodes: List[IABNode] = []
 
         self.reset()
@@ -139,16 +152,22 @@ class IABEnv:
         user_seed: int = int(self._rng.integers(0, 2**31))
         self.grid.generate_users(self.num_users, seed=user_seed)
 
-        # Donor fixed at grid centre; fibre gives effectively unlimited in-flow.
-        cx: float = self.grid.width / 2.0
-        cy: float = self.grid.height / 2.0
-        self._donor = IABNode(
-            x=cx,
-            y=cy,
-            is_donor=True,
-            flow_in_capacity=self.DONOR_FLOW_CAPACITY_MBPS,
-            flow_out_demand=0.0,
+        # Spawn 5–20 donor nodes at randomly chosen discrete candidate sites.
+        self.num_donors: int = int(self._rng.integers(5, 21))
+        site_indices = self._rng.choice(
+            len(self.potential_sites), size=self.num_donors, replace=False
         )
+        self._donors = [
+            IABNode(
+                x=float(self.potential_sites[idx][0]),
+                y=float(self.potential_sites[idx][1]),
+                is_donor=True,
+                flow_in_capacity=self.DONOR_FLOW_CAPACITY_MBPS,
+                flow_out_demand=0.0,
+            )
+            for idx in site_indices
+        ]
+        self._donor = self._donors[0]  # backward-compat alias
 
         return self._build_state(sum_rate_mbps=0.0, coverage_rate=0.0)
 
@@ -200,10 +219,11 @@ class IABEnv:
             ``True`` if the episode has terminated.
         """
         # ── 1. Place relay node ──────────────────────────────────────────
+        # Clamp to [0, grid_size) — 1000 m boundary for the Zhang et al. grid.
         x = float(np.clip(action_coords[0], 0.0,
-                          np.nextafter(self.grid.width,  0.0)))
+                          np.nextafter(float(self.grid_size), 0.0)))
         y = float(np.clip(action_coords[1], 0.0,
-                          np.nextafter(self.grid.height, 0.0)))
+                          np.nextafter(float(self.grid_size), 0.0)))
 
         new_relay = IABNode(
             x=x, y=y,
@@ -214,8 +234,9 @@ class IABEnv:
         self._relay_nodes.append(new_relay)
 
         # ── 2. Build position arrays ─────────────────────────────────────
-        # all_nodes = [donor, relay_0, relay_1, ..., relay_{N_r-1}]
-        all_nodes: List[IABNode] = [self._donor] + self._relay_nodes
+        # all_nodes = [donor_0, …, donor_{N_d-1}, relay_0, …, relay_{N_r-1}]
+        n_donors: int = len(self._donors)
+        all_nodes: List[IABNode] = self._donors + self._relay_nodes
 
         user_pos: np.ndarray = np.array(
             [[u.x, u.y] for u in self.grid.users], dtype=float
@@ -223,11 +244,11 @@ class IABEnv:
 
         node_pos: np.ndarray = np.array(
             [[n.x, n.y] for n in all_nodes], dtype=float
-        )  # (N_a, 2)   N_a = 1 + N_r
+        )  # (N_a, 2)   N_a = N_d + N_r
 
         donor_pos: np.ndarray = np.array(
-            [[self._donor.x, self._donor.y]], dtype=float
-        )  # (1, 2)
+            [[d.x, d.y] for d in self._donors], dtype=float
+        )  # (N_d, 2)
 
         relay_pos: np.ndarray = np.array(
             [[n.x, n.y] for n in self._relay_nodes], dtype=float
@@ -239,10 +260,12 @@ class IABEnv:
             user_pos[:, np.newaxis, :] - node_pos[np.newaxis, :, :], axis=2
         )
 
-        # D_rd[i] = ‖pos_relay_i − pos_donor‖₂   shape: (N_r,)
-        dist_r2d: np.ndarray = np.linalg.norm(
-            relay_pos - donor_pos, axis=1
-        )
+        # D_rd[i] = min_d ‖pos_relay_i − pos_donor_d‖₂   shape: (N_r,)
+        # Each relay backhauled to its nearest donor.
+        dist_r2d_all: np.ndarray = np.linalg.norm(
+            relay_pos[:, np.newaxis, :] - donor_pos[np.newaxis, :, :], axis=2
+        )  # (N_r, N_d)
+        dist_r2d: np.ndarray = dist_r2d_all.min(axis=1)  # (N_r,)
 
         # ── 4. SNR matrix and user association ───────────────────────────
         snr_matrix: np.ndarray = self._compute_snr_matrix(dist_u2n)
@@ -267,9 +290,9 @@ class IABEnv:
         )  # (N_u,)
 
         for i, relay in enumerate(self._relay_nodes):
-            relay_global_idx: int = i + 1  # 0 is donor in all_nodes
+            relay_global_idx: int = n_donors + i  # donors occupy indices 0..n_donors-1
 
-            # Backhaul capacity: Shannon capacity of relay → donor link
+            # Backhaul capacity: Shannon capacity of relay → nearest donor link
             d_bh: float = float(dist_r2d[i])
             p_los_bh: float = self.channel.calculate_los_prob(d_bh)
             is_los_bh: bool = bool(self._rng.random() < p_los_bh)
@@ -285,9 +308,10 @@ class IABEnv:
             user_mask: np.ndarray = best_node_idx == relay_global_idx
             relay.flow_out_demand = float(np.sum(user_demands[user_mask]))
 
-        # Also update donor's outgoing demand (sum of all relay demands).
-        donor_mask: np.ndarray = best_node_idx == 0
-        self._donor.flow_out_demand = float(np.sum(user_demands[donor_mask]))
+        # Update each donor's outgoing demand (users directly served by it).
+        for d_idx, donor in enumerate(self._donors):
+            donor_mask: np.ndarray = best_node_idx == d_idx
+            donor.flow_out_demand = float(np.sum(user_demands[donor_mask]))
 
         # ── 6. Reward ─────────────────────────────────────────────────────
         reward: float = sum_rate_mbps
@@ -429,12 +453,17 @@ class IABEnv:
         for i, relay in enumerate(self._relay_nodes):
             node_positions[i] = [relay.x, relay.y]
 
+        donor_positions: np.ndarray = np.array(
+            [[d.x, d.y] for d in self._donors], dtype=float
+        )  # (N_d, 2) — all active donors
+
         return {
             "user_positions": user_positions,
             "node_positions": node_positions,
             "donor_position": np.array(
                 [self._donor.x, self._donor.y], dtype=float
-            ),
+            ),  # alias: first donor, kept for downstream compat
+            "donor_positions": donor_positions,
             "num_nodes": len(self._relay_nodes),
             "sum_rate_mbps": sum_rate_mbps,
             "coverage_rate": coverage_rate,

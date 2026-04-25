@@ -153,26 +153,30 @@ class IABNode:
         self.flow_in_capacity: float = float(flow_in_capacity)
         self.flow_out_demand: float = float(flow_out_demand)
 
+        # Zhang et al. (2023) real-world constraints
+        self.overhead: float = 1.2
+        self.access_demand: float = float(np.random.uniform(100.0, 1500.0))
+        self.capacity: float = 15000.0 if self.is_donor else 0.0
+
     def check_backhaul_constraint(self) -> bool:
         """
         Evaluate whether the backhaul capacity constraint is satisfied.
 
-        The IAB backhaul feasibility condition requires that the incoming
-        capacity of this node is at least equal to the total outgoing demand:
+        Implements the overhead-aware feasibility condition from Zhang et al.
+        (2023), which accounts for protocol overhead and local access demand:
 
-            flow_in_capacity >= flow_out_demand
-
-        For donor nodes this constraint is almost always satisfied by design
-        (fibre link); for relay nodes it is the critical bottleneck that the
-        DRL agent must respect during AP placement.
+            Donor : capacity  >= overhead * (access_demand + flow_out_demand)
+            Relay : flow_in_capacity >= overhead * (access_demand + flow_out_demand)
 
         Returns
         -------
         bool
-            ``True`` if the backhaul constraint is satisfied
-            (``flow_in_capacity >= flow_out_demand``); ``False`` otherwise.
+            ``True`` if the backhaul constraint is satisfied; ``False`` otherwise.
         """
-        return self.flow_in_capacity >= self.flow_out_demand
+        required: float = self.overhead * (self.access_demand + self.flow_out_demand)
+        if self.is_donor:
+            return self.capacity >= required
+        return self.flow_in_capacity >= required
 
     def __repr__(self) -> str:
         node_type: str = "Donor" if self.is_donor else "Relay"

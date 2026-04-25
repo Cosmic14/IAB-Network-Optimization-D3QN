@@ -18,13 +18,11 @@ from environment import IABEnv
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
 def make_env(
-    width: float = 500.0,
-    height: float = 500.0,
     num_users: int = 10,
     seed: int = 42,
 ) -> IABEnv:
     """Return a seeded IABEnv for deterministic tests."""
-    return IABEnv(width=width, height=height, num_users=num_users, seed=seed)
+    return IABEnv(num_users=num_users, seed=seed)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -78,13 +76,15 @@ class TestReset(unittest.TestCase):
         self.env.reset()
         self.assertTrue(self.env._donor.is_donor)
 
-    def test_donor_placed_at_grid_centre_x(self) -> None:
+    def test_donor_placed_at_valid_potential_site_x(self) -> None:
         self.env.reset()
-        self.assertAlmostEqual(self.env._donor.x, self.env.grid.width / 2.0)
+        xs = [s[0] for s in self.env.potential_sites]
+        self.assertIn(int(self.env._donor.x), xs)
 
-    def test_donor_placed_at_grid_centre_y(self) -> None:
+    def test_donor_placed_at_valid_potential_site_y(self) -> None:
         self.env.reset()
-        self.assertAlmostEqual(self.env._donor.y, self.env.grid.height / 2.0)
+        ys = [s[1] for s in self.env.potential_sites]
+        self.assertIn(int(self.env._donor.y), ys)
 
     def test_donor_flow_in_matches_class_constant(self) -> None:
         self.env.reset()
@@ -97,12 +97,11 @@ class TestReset(unittest.TestCase):
         self.env.reset()
         self.assertAlmostEqual(self.env._donor.flow_out_demand, 0.0)
 
-    def test_donor_position_in_state_matches_grid_centre(self) -> None:
+    def test_donor_position_in_state_matches_first_donor(self) -> None:
         state = self.env.reset()
-        cx = self.env.grid.width / 2.0
-        cy = self.env.grid.height / 2.0
         np.testing.assert_array_almost_equal(
-            state["donor_position"], np.array([cx, cy])
+            state["donor_position"],
+            np.array([self.env._donors[0].x, self.env._donors[0].y]),
         )
 
     # --- User population -------------------------------------------------
@@ -469,8 +468,8 @@ class TestRewardBackhaulPenalty(unittest.TestCase):
         """
         # Both envs share the same seed so user layout and LoS draws are
         # identical up to the constraint check.
-        env_ok = IABEnv(500, 500, 10, seed=5)
-        env_bad = IABEnv(500, 500, 10, seed=5)
+        env_ok = IABEnv(num_users=10, seed=5)
+        env_bad = IABEnv(num_users=10, seed=5)
 
         with mock.patch.object(
             IABNode, "check_backhaul_constraint", return_value=True
