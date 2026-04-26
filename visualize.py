@@ -74,7 +74,7 @@ def compute_associations(
     rng = np.random.default_rng(seed)
     channel = ChannelModel()
 
-    all_nodes = [env._donor] + env._relay_nodes
+    all_nodes = env._donors + env._relay_nodes
     user_pos = np.array([[u.x, u.y] for u in env.grid.users], dtype=float)
     node_pos = np.array([[n.x, n.y] for n in all_nodes],       dtype=float)
 
@@ -203,14 +203,14 @@ def visualize() -> None:
     6. Display the figure.
     """
     # ── 1. Environment setup ──────────────────────────────────────────────
-    env = IABEnv(width=500.0, height=500.0, num_users=20, seed=42)
+    env = IABEnv(num_users=20, seed=42)
     env.reset()
 
     # ── 2. Place three relay nodes ────────────────────────────────────────
     relay_coords = [
-        (110.0, 110.0),   # bottom-left coverage zone
-        (390.0, 110.0),   # bottom-right coverage zone
-        (250.0, 400.0),   # top-centre coverage zone
+        (220.0, 220.0),   # bottom-left coverage zone
+        (780.0, 220.0),   # bottom-right coverage zone
+        (500.0, 800.0),   # top-centre coverage zone
     ]
 
     step_rewards: list[float] = []
@@ -223,15 +223,15 @@ def visualize() -> None:
 
     # ── 3. Associations and capacities ───────────────────────────────────
     best_node_idx, user_capacities = compute_associations(env, seed=0)
-    all_nodes = [env._donor] + env._relay_nodes
+    all_nodes = env._donors + env._relay_nodes
 
     user_demands = np.array([u.data_demand_mbps for u in env.grid.users])
     is_connected = user_capacities >= user_demands
 
     # ── 4. Build figure ───────────────────────────────────────────────────
     fig, ax = plt.subplots(figsize=(10, 9))
-    ax.set_xlim(-10, 510)
-    ax.set_ylim(-10, 510)
+    ax.set_xlim(-10, 1010)
+    ax.set_ylim(-10, 1010)
     ax.set_xlabel("x  [m]")
     ax.set_ylabel("y  [m]")
     ax.set_title(
@@ -250,11 +250,14 @@ def visualize() -> None:
     ax.add_patch(boundary)
 
     # ── 4a. Connection lines: relay → donor ──────────────────────────────
-    donor = env._donor
+    n_donors = len(env._donors)
+    donor_pos_arr = np.array([[d.x, d.y] for d in env._donors])
     for i, relay in enumerate(env._relay_nodes):
-        colour = _NODE_COLOURS[i + 1]
+        colour = _NODE_COLOURS[(n_donors + i) % len(_NODE_COLOURS)]
+        dists = np.linalg.norm(donor_pos_arr - np.array([relay.x, relay.y]), axis=1)
+        nearest = env._donors[int(np.argmin(dists))]
         ax.plot(
-            [relay.x, donor.x], [relay.y, donor.y],
+            [relay.x, nearest.x], [relay.y, nearest.y],
             linestyle="--", linewidth=1.8, color=colour,
             alpha=0.75, zorder=1,
         )
@@ -262,7 +265,7 @@ def visualize() -> None:
     # ── 4b. Connection lines: user → best node ───────────────────────────
     for u_idx, user in enumerate(env.grid.users):
         node   = all_nodes[best_node_idx[u_idx]]
-        colour = _NODE_COLOURS[best_node_idx[u_idx]]
+        colour = _NODE_COLOURS[best_node_idx[u_idx] % len(_NODE_COLOURS)]
         ax.plot(
             [user.x, node.x], [user.y, node.y],
             linestyle="--", linewidth=0.8, color=colour,
@@ -296,7 +299,7 @@ def visualize() -> None:
 
     # ── 4d. Relay nodes ───────────────────────────────────────────────────
     for i, relay in enumerate(env._relay_nodes):
-        colour = _NODE_COLOURS[i + 1]
+        colour = _NODE_COLOURS[(n_donors + i) % len(_NODE_COLOURS)]
         bh_ok  = relay.check_backhaul_constraint()
         edge   = "#000000" if bh_ok else "#ff0000"
         ax.scatter(
@@ -314,27 +317,28 @@ def visualize() -> None:
         )
 
     # ── 4e. Donor node ────────────────────────────────────────────────────
-    ax.scatter(
-        donor.x, donor.y,
-        s=350, marker="*", color="#e41a1c",
-        edgecolors="#8b0000", linewidths=1.5, zorder=6,
-        label="Donor (fibre)",
-    )
-    ax.annotate(
-        "Donor",
-        xy=(donor.x, donor.y),
-        xytext=(10, 8), textcoords="offset points",
-        fontsize=9, color="#e41a1c", fontweight="bold",
-        bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.8),
-        zorder=7,
-    )
+    for d_idx, donor in enumerate(env._donors):
+        ax.scatter(
+            donor.x, donor.y,
+            s=350, marker="*", color="#e41a1c",
+            edgecolors="#8b0000", linewidths=1.5, zorder=6,
+            label="Donors (fibre)" if d_idx == 0 else "_nolegend_",
+        )
+        ax.annotate(
+            f"D{d_idx+1}",
+            xy=(donor.x, donor.y),
+            xytext=(10, 8), textcoords="offset points",
+            fontsize=9, color="#e41a1c", fontweight="bold",
+            bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.8),
+            zorder=7,
+        )
 
     # ── 4f. Legend ────────────────────────────────────────────────────────
     relay_handles = [
         mlines.Line2D(
             [], [],
             marker="s", color="w",
-            markerfacecolor=_NODE_COLOURS[i + 1],
+            markerfacecolor=_NODE_COLOURS[(n_donors + i) % len(_NODE_COLOURS)],
             markeredgecolor="#000000",
             markersize=10,
             label=f"Relay {i+1}  ({r.x:.0f}, {r.y:.0f}) m",
@@ -343,21 +347,22 @@ def visualize() -> None:
     ]
     bh_line = mlines.Line2D(
         [], [], color="#377eb8", linestyle="--",
-        linewidth=1.8, label="Backhaul link (relay → donor)",
+        linewidth=1.8, label="Backhaul link (relay → nearest donor)",
     )
     conn_line = mlines.Line2D(
         [], [], color="#aaaaaa", linestyle="--",
         linewidth=0.8, label="Access link (user → node)",
     )
 
-    ax.legend(
+    leg = ax.legend(
         handles=ax.get_legend_handles_labels()[0][:2]
                 + relay_handles + [bh_line, conn_line],
-        loc="upper right",
+        loc="upper left",
         fontsize=9,
-        framealpha=0.9,
+        framealpha=1.0,
         edgecolor="#cccccc",
     )
+    leg.set_zorder(100)
 
     # ── 4g. Metrics text box ──────────────────────────────────────────────
     n_conn    = int(np.sum(is_connected))
