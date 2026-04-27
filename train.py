@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 
 import torch
+import pandas as pd
 
 from agent import D3QNAgent
 from environment import IABEnv
@@ -71,14 +72,15 @@ def parse_args() -> argparse.Namespace:
                         help="Initial exploration rate (default: 1.0)")
     parser.add_argument("--epsilon_end",   type=float, default=0.01,
                         help="Minimum exploration rate (default: 0.01)")
-    parser.add_argument("--epsilon_decay", type=float, default=0.995,
-                        help="Multiplicative decay per episode (default: 0.995)")
+    parser.add_argument("--epsilon_decay", type=float, default=0.997,
+                        help="Multiplicative decay per episode (default: 0.997; "
+                             "reaches ε_min≈0.01 by ~episode 1500)")
 
     # Checkpointing
     parser.add_argument("--checkpoint_dir",    type=str, default="models",
                         help="Directory for saved weights (default: models/)")
-    parser.add_argument("--checkpoint_every",  type=int, default=500,
-                        help="Save checkpoint every N episodes (default: 500)")
+    parser.add_argument("--checkpoint_every",  type=int, default=100,
+                        help="Save checkpoint every N episodes (default: 100)")
     parser.add_argument("--seed", type=int, default=None,
                         help="Random seed for reproducibility (default: None)")
 
@@ -108,7 +110,7 @@ def save_checkpoint(
         Current episode number, included in the console message only.
     """
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    save_path: Path = checkpoint_dir / "d3qn_policy.pth"
+    save_path: Path = checkpoint_dir / "d3qn_checkpoint.pth"
     torch.save(agent.policy_net.state_dict(), save_path)
     print(f"  [checkpoint] saved → {save_path}  (episode {episode})")
 
@@ -146,6 +148,13 @@ def train(args: argparse.Namespace) -> None:
 
     checkpoint_dir = Path(args.checkpoint_dir)
 
+    # ── Device ───────────────────────────────────────────────────────────
+    device = torch.device(
+        "cuda" if torch.cuda.is_available()
+        else "mps" if torch.backends.mps.is_available()
+        else "cpu"
+    )
+
     # ── Environment and agent ────────────────────────────────────────────
     env = IABEnv(
         num_users=args.num_users,
@@ -160,9 +169,13 @@ def train(args: argparse.Namespace) -> None:
         buffer_capacity=args.buffer_capacity,
         lr=args.lr,
         hidden_dim=args.hidden_dim,
+        device=device,
     )
 
     epsilon: float = args.epsilon_start
+
+    # ── Training log ─────────────────────────────────────────────────────
+    training_log: list[dict] = []
 
     # ── Header ───────────────────────────────────────────────────────────
     print(
@@ -172,7 +185,7 @@ def train(args: argparse.Namespace) -> None:
         f"  Action grid   : {args.n_bins}×{args.n_bins} = {args.n_bins**2} actions\n"
         f"  Input dim     : {agent.input_dim}\n"
         f"  Buffer cap    : {args.buffer_capacity:,}\n"
-        f"  Device        : {agent.device}\n"
+        f"  Device        : {device}\n"
         f"  Seed          : {args.seed}\n"
         f"{'─'*70}\n"
         f"{'Episode':>8} {'Reward':>10} {'SumRate(Mbps)':>14} "
@@ -217,8 +230,9 @@ def train(args: argparse.Namespace) -> None:
         epsilon = max(args.epsilon_end, epsilon * args.epsilon_decay)
 
         # ── Per-episode logging ──────────────────────────────────────────
+        avg_loss = episode_loss / loss_steps if loss_steps > 0 else float("nan")
         avg_loss_str = (
-            f"{episode_loss / loss_steps:10.4f}" if loss_steps > 0 else "          —"
+            f"{avg_loss:10.4f}" if loss_steps > 0 else "          —"
         )
         print(
             f"{episode:>8d} "
@@ -228,6 +242,13 @@ def train(args: argparse.Namespace) -> None:
             f"{epsilon:>7.4f} "
             f"{avg_loss_str}"
         )
+        training_log.append({
+            "episode":        episode,
+            "reward":         episode_reward,
+            "sum_rate_mbps":  next_state_dict["sum_rate_mbps"],
+            "nodes_deployed": next_state_dict["num_nodes"],
+            "loss":           avg_loss,
+        })
 
         # ── Periodic checkpoint ───────────────────────────────────────────
         if episode % args.checkpoint_every == 0:
@@ -236,7 +257,12 @@ def train(args: argparse.Namespace) -> None:
     # ── Final checkpoint ─────────────────────────────────────────────────
     print("─" * 70)
     save_checkpoint(agent, checkpoint_dir, episode)
-    print(f"\nTraining complete. Final weights → {checkpoint_dir / 'd3qn_policy.pth'}")
+
+    # ── Save training log ────────────────────────────────────────────────
+    log_path = Path("training_log.csv")
+    pd.DataFrame(training_log).to_csv(log_path, index=False)
+    print(f"Training log    → {log_path}")
+    print(f"\nTraining complete. Final weights → {checkpoint_dir / 'd3qn_checkpoint.pth'}")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
