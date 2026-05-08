@@ -169,6 +169,10 @@ class IABEnv:
         ]
         self._donor = self._donors[0]  # backward-compat alias
 
+        # Tracks which users were connected at the end of the previous step so
+        # the reward shaping can credit only *newly* connected users each step.
+        self._prev_connected: np.ndarray = np.zeros(self.num_users, dtype=bool)
+
         return self._build_state(sum_rate_mbps=0.0, coverage_rate=0.0)
 
     def step(
@@ -313,8 +317,9 @@ class IABEnv:
             donor_mask: np.ndarray = best_node_idx == d_idx
             donor.flow_out_demand = float(np.sum(user_demands[donor_mask]))
 
-        # ── 6. Reward ─────────────────────────────────────────────────────
-        reward: float = sum_rate_mbps
+        # ── 6. Reward (shaped) ────────────────────────────────────────────
+        # Throughput is a secondary goal: scale sum-rate contribution by 0.1.
+        reward: float = 0.1 * sum_rate_mbps
 
         for relay in self._relay_nodes:
             if not relay.check_backhaul_constraint():
@@ -322,10 +327,23 @@ class IABEnv:
 
         reward -= self.CAPEX_PENALTY * len(self._relay_nodes)
 
+        # Coverage shaping — primary signal.
+        currently_connected: np.ndarray = user_capacities >= user_demands
+        newly_connected: int = int(
+            np.sum(currently_connected & ~self._prev_connected)
+        )
+        reward += 500.0 * newly_connected          # +500 per newly covered user
+
         # ── 7. Termination ────────────────────────────────────────────────
-        all_demands_met: bool = bool(np.all(user_capacities >= user_demands))
+        all_demands_met: bool = bool(np.all(currently_connected))
         max_nodes_reached: bool = len(self._relay_nodes) >= self.MAX_NODES
         done: bool = all_demands_met or max_nodes_reached
+
+        if done:
+            unconnected: int = int(np.sum(~currently_connected))
+            reward -= 100.0 * unconnected          # -100 per user still uncovered
+
+        self._prev_connected = currently_connected
 
         coverage_rate: float = float(
             np.mean(user_capacities >= user_demands)

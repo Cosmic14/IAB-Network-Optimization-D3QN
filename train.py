@@ -44,9 +44,9 @@ def parse_args() -> argparse.Namespace:
     # Environment (grid fixed at 1000 m × 1000 m per Zhang et al. 2023)
     parser.add_argument("--num_users",  type=int,   default=10,
                         help="Number of UEs per episode (default: 10)")
-    parser.add_argument("--n_bins",     type=int,   default=7,
+    parser.add_argument("--n_bins",     type=int,   default=10,
                         help="Action grid bins per axis; action_dim = n_bins² "
-                             "(default: 7 → 49 actions)")
+                             "(default: 10 → 100 actions)")
 
     # Training loop
     parser.add_argument("--episodes",       type=int,   default=2000,
